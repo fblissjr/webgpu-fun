@@ -2,11 +2,11 @@
 import React, { Suspense, useEffect, useRef, useState, useMemo } from 'react';
 import { Engine as RLEngine, Scene, useScene, useEngine } from 'react-babylonjs';
 import {
-  Vector3, Color3, Color4, ArcRotateCamera, // HemisphericLight, PointLight removed as they are unused direct imports
+  Vector3, Color3, Color4, ArcRotateCamera, PointerEventTypes, // Added PointerEventTypes
   StandardMaterial, PBRMaterial, Texture, CubeTexture, ParticleSystem,
-  GPUParticleSystem, BoxParticleEmitter, WebGPUEngine, DefaultRenderingPipeline,
-  MeshBuilder, Nullable, Engine as BabylonJSEngine, // BabylonScene removed
-  GlowLayer, Animation, Mesh // ActionManager, ExecuteCodeAction removed
+  GPUParticleSystem, BoxParticleEmitter, DefaultRenderingPipeline,
+  MeshBuilder, Nullable,
+  GlowLayer, Animation, Mesh // ActionManager, ExecuteCodeAction removed as JSX components didn't work
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 
@@ -34,6 +34,24 @@ const StarCore: React.FC<StarCoreProps> = ({ position, clusterId, name, size = 1
   const sphereRef = useRef<Nullable<Mesh>>(null);
   const { base: baseColor, emissive: emissiveColor } = CLUSTER_COLORS_BABYLON[clusterId % CLUSTER_COLORS_BABYLON.length];
   
+  useEffect(() => {
+    const mesh = sphereRef.current;
+    if (mesh) {
+      const scene = mesh.getScene();
+      // Ensure onClick is memoized if it's passed as a prop to prevent re-adding observers.
+      const pointerObserver = scene.onPointerObservable.add((pointerInfo) => {
+        if (pointerInfo.type === PointerEventTypes.POINTERPICK &&
+            pointerInfo.pickInfo?.hit &&
+            pointerInfo.pickInfo.pickedMesh === mesh) {
+          onClick();
+        }
+      });
+      return () => {
+        scene.onPointerObservable.remove(pointerObserver);
+      };
+    }
+  }, [sphereRef, onClick, scene]); // Added scene to dependencies for safety, though it should be stable for the mesh
+
   const pbrMaterial = useMemo(() => {
     if (!scene) return null;
     const mat = new PBRMaterial(`pbr-starcore-${name}-${Math.random()}`, scene);
@@ -65,9 +83,9 @@ const StarCore: React.FC<StarCoreProps> = ({ position, clusterId, name, size = 1
   return (
     <>
       <sphere ref={sphereRef} name={`starcore-${name}`} diameter={size * 1.8} segments={32} position={position}
-        onPointerClick={onClick}
+        material={pbrMaterial ?? undefined}
       >
-        {pbrMaterial && <materialFromInstance instance={pbrMaterial} />}
+        {/* Click/Pick handled by onPointerObservable in useEffect */}
       </sphere>
       <pointLight name={`light-starcore-${name}`} position={position}
         intensity={0.7 * (size > 1 ? size * 0.6 : 0.6) * (isSelected ? 1.6 : 1)} 
@@ -90,8 +108,8 @@ const CosmicTether: React.FC<CosmicTetherProps> = ({ from, to, color = new Color
   }, [scene, from, to, color]);
 
   return (
-    <tube name={`tether-${from.toString()}-${to.toString()}`} path={[from, to]} radius={0.04} tessellation={16} cap={MeshBuilder.CAP_ALL}>
-       {tubeMaterial && <materialFromInstance instance={tubeMaterial} />}
+    <tube name={`tether-${from.toString()}-${to.toString()}`} path={[from, to]} radius={0.04} tessellation={16} cap={Mesh.CAP_ALL} material={tubeMaterial ?? undefined}>
+       {/* Material is now a prop, materialFromInstance removed, MeshBuilder.CAP_ALL changed to Mesh.CAP_ALL */}
     </tube>
   );
 };
@@ -124,8 +142,11 @@ const NeuralConstellationsScene: React.FC = () => {
       if (GPUParticleSystem.IsSupported) {
         const stardustSystem = new GPUParticleSystem("stardust", { capacity: 12000 }, scene); 
         stardustSystem.particleTexture = new Texture("https://assets.babylonjs.com/particles/textures/flare.png", scene);
-        stardustSystem.emitter = Vector3.Zero(); 
-        stardustSystem.particleEmitterType = new BoxParticleEmitter(280);
+        stardustSystem.emitter = Vector3.Zero();
+        const emitterSize = 280;
+        stardustSystem.particleEmitterType = new BoxParticleEmitter(); // No arguments
+        (stardustSystem.particleEmitterType as BoxParticleEmitter).minEmitBox = new Vector3(-emitterSize/2, -emitterSize/2, -emitterSize/2);
+        (stardustSystem.particleEmitterType as BoxParticleEmitter).maxEmitBox = new Vector3(emitterSize/2, emitterSize/2, emitterSize/2);
         stardustSystem.minAngularSpeed = -0.35; stardustSystem.maxAngularSpeed = 0.35;
         stardustSystem.minSize = 0.025; stardustSystem.maxSize = 0.11;
         stardustSystem.minLifeTime = 3.5; stardustSystem.maxLifeTime = 7.5;
@@ -137,8 +158,8 @@ const NeuralConstellationsScene: React.FC = () => {
         stardustSystem.minEmitPower = 0.25; stardustSystem.maxEmitPower = 0.75;
         stardustSystem.updateSpeed = 0.012;
         stardustSystem.gravity = Vector3.Zero();
-        stardustSystem.addVelocityGradient(0, 0.025, 0.08);
-        stardustSystem.addVelocityGradient(1.0, -0.025, -0.08);
+        stardustSystem.addVelocityGradient(0, 0.025); // Removed third argument
+        stardustSystem.addVelocityGradient(1.0, -0.025); // Removed third argument
         stardustSystem.start();
         particleSystemRef.current = stardustSystem;
       }
@@ -146,12 +167,11 @@ const NeuralConstellationsScene: React.FC = () => {
         pipeline?.dispose();
         glowLayer?.dispose();
         particleSystemRef.current?.dispose();
-        skybox?.dispose(); 
-        scene?.materials.forEach(m => m.dispose(false, false));
-        scene?.textures.forEach(t => t.dispose());
+        skybox?.dispose();
+        // scene cleanup for materials & textures is often handled by react-babylonjs or by disposing the scene itself
       }
     }
-  }, [scene, engine]);
+  }, [scene, engine]); // engine dependency might be removed if engine is always available via useEngine()
 
   const tethers = useMemo(() => {
     const connections: JSX.Element[] = [];
@@ -170,15 +190,15 @@ const NeuralConstellationsScene: React.FC = () => {
 
   useEffect(() => {
     const camera = cameraRef.current;
-    if (camera) {
+    if (camera && scene) { // Ensure scene is available for animation context
         const starData = MOCK_EMBEDDINGS_BABYLON.find(s => s.id === selectedStarId);
         const targetPosition = starData ? starData.position : Vector3.Zero(); 
         
         Animation.CreateAndStartAnimation(
             "camTargetAnim", camera, "target", 
-            60, 20, camera.target, targetPosition, Animation.ANIMATIONLOOPMODE_CONSTANT );
+            60, 20, camera.target, targetPosition, Animation.ANIMATIONLOOPMODE_CONSTANT, undefined, undefined, scene );
     }
-  }, [selectedStarId, scene]); 
+  }, [selectedStarId, scene, cameraRef]); // Added cameraRef to dependencies
 
   const handleStarClick = (id: string) => {
     setSelectedStarId(prevId => prevId === id ? null : id); 
@@ -188,93 +208,71 @@ const NeuralConstellationsScene: React.FC = () => {
     <>
       <arcRotateCamera ref={cameraRef} name="camera1" target={Vector3.Zero()} alpha={Math.PI / 2.2} beta={Math.PI / 2.8}
         radius={45} minZ={0.1} maxZ={2000} lowerRadiusLimit={8} upperRadiusLimit={150} wheelPrecision={40}
-        useAutoRotationBehavior={true} autoRotationBehavior={{ idleRotationSpeed: 0.025, idleRotationWaitTime: 2500, zoomStopsAnimation: true }} />
+        useAutoRotationBehavior={true}
+        />
+        {/* autoRotationBehavior prop and its options will be set in useEffect once cameraRef is valid, if direct props aren't available in react-babylonjs for these specific sub-properties */}
       <hemisphericLight name="hemiLight" intensity={0.18} direction={Vector3.Up()} groundColor={new Color3(0.1, 0.1, 0.4)}/>
-      {MOCK_EMBEDDINGS_BABYLON.map(emb => <StarCore key={emb.id} {...emb} isSelected={selectedStarId === emb.id} onClick={() => handleStarClick(emb.id)} />)}
+      {MOCK_EMBEDDINGS_BABYLON.map(emb => <StarCore key={emb.id} position={emb.position} name={emb.name} size={emb.size} clusterId={emb.cluster} isSelected={selectedStarId === emb.id} onClick={() => handleStarClick(emb.id)} />)}
       {tethers}
     </>
   );
 };
 
-const BabylonApp: React.FC = () => {
-  const babylonCanvasRef = useRef<Nullable<HTMLCanvasElement>>(null);
-  const [engine, setEngine] = useState<Nullable<BabylonJSEngine>>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [engineType, setEngineType] = useState<string>("Initializing...");
-  const isMountedRef = useRef(true);
-
+const EngineTypeDisplay: React.FC = () => {
+  const engine = useEngine();
+  const [engineType, setEngineType] = useState("Detecting...");
   useEffect(() => {
-    isMountedRef.current = true;
-    let currentEngine: Nullable<BabylonJSEngine> = null;
-
-    const initialize = async () => {
-      if (babylonCanvasRef.current) {
-        const canvas = babylonCanvasRef.current;
-        try {
-          if (await WebGPUEngine.IsSupportedAsync) {
-            console.log("BabylonApp: WebGPU is supported. Initializing WebGPUEngine.");
-            currentEngine = new WebGPUEngine(canvas, { antialias: true, adaptToDeviceRatio: true, stencil: true });
-            await currentEngine.initAsync();
-            console.log("BabylonApp: WebGPUEngine initialized successfully.");
-            if (isMountedRef.current) { setEngineType("WebGPU"); setEngine(currentEngine); }
-          } else {
-            throw new Error("WebGPUEngine.IsSupportedAsync returned false.");
-          }
-        } catch (e: any) {
-          console.warn("BabylonApp: WebGPUEngine initialization failed:", e.message, "Falling back to WebGL.");
-          if (isMountedRef.current) setError(`BabylonApp WebGPU Error: ${e.message}. Using WebGL.`);
-          currentEngine = new BabylonJSEngine(canvas, true, { preserveDrawingBuffer: true, stencil: true, antialias: true });
-          if (isMountedRef.current) { setEngineType("WebGL (Fallback)"); setEngine(currentEngine); }
-        }
+    if (engine) {
+      // Check constructor name or a specific capability
+      if (engine.constructor.name === "WebGPUEngine") {
+        setEngineType("WebGPU");
+      } else {
+        setEngineType("WebGL");
       }
-    };
+    }
+  }, [engine]);
+  return <>{engineType}</>;
+}
 
-    if (!engine && babylonCanvasRef.current) { initialize(); } 
+const BabylonApp: React.FC = () => {
+  // Removed manual engine creation and related states (engine, error, engineType from here)
+  // react-babylonjs <Engine> component will manage the engine lifecycle.
+  const engineOptions = useMemo(() => ({
+    preferWebGPU: true,
+    antialias: true,
+    adaptToDeviceRatio: true,
+    stencil: true,
+    preserveDrawingBuffer: true, // Kept from original WebGL fallback
+  }), []);
 
-    return () => {
-      isMountedRef.current = false;
-      console.log("BabylonApp: Component unmounting. Disposing engine.");
-      engine?.dispose();
-      if (currentEngine && currentEngine !== engine) { 
-          currentEngine.dispose();
-      }
-      setEngine(null);
-      setEngineType("Disposed");
-    };
-  }, [engine]); 
+  // Note: The error state for WebGPU fallback needs a different handling now,
+  // potentially by trying to render with WebGL if WebGPU fails,
+  // or by using a global error boundary. For now, this is simplified.
 
   return (
     <div style={{ width: '100%', height: '100%', background:'#000005', position: 'relative' }}>
-      {error && <div style={{ color: 'orange', padding: '10px', background: 'rgba(0,0,0,0.8)', textAlign:'center', position:'absolute', top:0, left:0, width:'100%', zIndex:10000, fontSize:'12px' }}>{error}</div>}
-      
-      {engineType === "Initializing..." && (
-         <canvas ref={babylonCanvasRef} id="babylon-canvas-placeholder" style={{width:'100%', height:'100%', outline:'none', background:'#000005'}} />
-      )}
-      {engineType === "Initializing..." && (
-        <div style={{position:'absolute', top:0,left:0, width:'100%',height:'100%', display:'flex', justifyContent:'center',alignItems:'center',color:'white', fontSize:'1.2em'}}>
-            Initializing 3D Context...
-        </div>
-      )}
-      
-      {engine && (
-        <RLEngine antialias adaptToDeviceRatio engine={engine} canvasId="babylon-canvas-rl" style={{width: '100%', height: '100%'}}>
-          <Scene>
-            <Suspense fallback={ <BabylonHtmlFallback center>
-                    <div style={{color:'white', textAlign:'center', fontSize: '1.2em', background:'rgba(0,0,0,0.5)', padding:'20px', borderRadius:'8px'}}>
-                        Loading Neural Constellations...
-                    </div>
-                </BabylonHtmlFallback> }>
-              <NeuralConstellationsScene />
-            </Suspense>
-          </Scene>
-        </RLEngine>
-      )}
+      {/*
+        The <Engine> component from react-babylonjs will create the canvas.
+        No need for babylonCanvasRef or manual placeholder canvas if RLEngine handles it.
+        If a specific canvas ID is needed, it can be passed to <Engine canvasId='...'>.
+      */}
+      <RLEngine engineOptions={engineOptions} canvasId="babylon-canvas-rl">
+        <Scene>
+          <Suspense fallback={ <BabylonHtmlFallback center>
+                  <div style={{color:'white', textAlign:'center', fontSize: '1.2em', background:'rgba(0,0,0,0.5)', padding:'20px', borderRadius:'8px'}}>
+                      Loading Neural Constellations...
+                  </div>
+              </BabylonHtmlFallback> }>
+            <NeuralConstellationsScene />
+          </Suspense>
+        </Scene>
+      </RLEngine>
       <div style={{ position: 'absolute', bottom: '10px', right: '10px', color: 'rgba(220, 220, 255, 0.75)',
         fontSize: '12px', fontFamily: 'Arial, sans-serif', background: 'rgba(0,0,10,0.7)',
         padding: '5px 10px', borderRadius: '5px', zIndex: 10000 }}>
         <b>Neural Constellations (Babylon.js)</b> <br />
         Features: PBR, GPU Particles, Post-Processing, Dynamic Interactions <br />
-        Renderer: {engineType}
+        Renderer: <EngineTypeDisplay />
       </div>
     </div>
   );

@@ -5,35 +5,37 @@
 // Minor filter memoization.
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import { Stage, Container, Graphics, Text as PixiText, useTick, useApp } from '@pixi/react';
+import { Application, extend, useApplication, useTick } from '@pixi/react';
 import * as PIXI from 'pixi.js';
-import { BlurFilter } from '@pixi/filter-blur'; // Explicit import
+
+// Extend PixiJS components for use in JSX
+extend({
+  Container: PIXI.Container,
+  Graphics: PIXI.Graphics,
+  Text: PIXI.Text,
+  Sprite: PIXI.Sprite, // Assuming Sprite might be used or good to have
+  // Add other components if PixiApp uses them, e.g., PIXI.Sprite, PIXI.TilingSprite
+});
+
 
 // Pixi Assets initialization (global, runs once)
 let pixiAssetsInitializedPromise: Promise<void> | null = null;
 const initializePixiAssets = async () => {
     if (!pixiAssetsInitializedPromise) {
-        pixiAssetsInitializedPromise = (async () => {
-            try {
-                await PIXI.Assets.init({
-                    preferences: {
-                        preferWebGPU: true, // Request WebGPU
-                        // fallbackSources: ['webgl2', 'webgl'], // Define fallback order if needed
-                    },
-                });
-                console.log("PixiApp: PIXI.Assets initialized with WebGPU preference.");
-            } catch (e) {
-                console.warn("PixiApp: PIXI.Assets.init with WebGPU preference failed:", e);
-                // Fallback to default init (usually WebGL2 then WebGL1)
-                await PIXI.Assets.init({}); 
-                console.log("PixiApp: PIXI.Assets initialized with default preferences.");
-            }
-        })();
+        // PIXI.Assets.init in v8 is mainly for asset loader configuration.
+        // Renderer preferences are typically handled by Application constructor.
+        pixiAssetsInitializedPromise = PIXI.Assets.init({}).then(() => {
+            console.log("PixiApp: PIXI.Assets initialized.");
+        }).catch(e => {
+            console.error("PixiApp: PIXI.Assets.init failed:", e);
+            // Ensure promise rejects or handles error appropriately if needed downstream
+            throw e;
+        });
     }
     return pixiAssetsInitializedPromise;
 };
 
-const MOCK_EMBEDDINGS_PIXI = [
+const MOCK_EMBEDDINGS_PIXI: Array<{id: string, position: {x:number, y:number}, cluster: number, name: string, size: number, rune: string}> = [
   { id: 'p_emb_0_1', position: { x: 200, y: 300 }, cluster: 0, name: "Library of Alexandria", size: 25, rune: '📜' },
   { id: 'p_emb_0_2', position: { x: 350, y: 250 }, cluster: 0, name: "Oracle of Delphi", size: 30, rune: '🧿' },
   { id: 'p_emb_1_1', position: { x: 700, y: 500 }, cluster: 1, name: "Philosopher's Stone", size: 35, rune: '💎' },
@@ -64,7 +66,8 @@ const RuneGlyph: React.FC<RuneGlyphProps> = ({
   const timeRef = useRef(0);
   const currentScaleRef = useRef(1); // For lerping scale
 
-  useTick(delta => {
+  useTick(ticker => { // ticker is PIXI.Ticker in v8
+    const delta = ticker.deltaTime; // deltaTime is the time elapsed in frames or ms
     timeRef.current += delta;
     setRotation(r => r + delta * 0.004 * (isSelected ? 1.8 : 1));
     
@@ -76,8 +79,8 @@ const RuneGlyph: React.FC<RuneGlyphProps> = ({
   const currentAlpha = isSelected ? 1 : (isHovered ? 0.95 : 0.88);
   const animatedScale = currentScaleRef.current;
 
-  const blurFilterGlow = useMemo(() => new BlurFilter(isSelected || isHovered ? 5 : 2.5), [isSelected, isHovered]);
-  const blurFilterHighlight = useMemo(() => new BlurFilter(isSelected ? 4 : 2), [isSelected]);
+  const blurFilterGlow = useMemo(() => new PIXI.BlurFilter({ strength: isSelected || isHovered ? 5 : 2.5 }), [isSelected, isHovered]);
+  const blurFilterHighlight = useMemo(() => new PIXI.BlurFilter({ strength: isSelected ? 4 : 2 }), [isSelected]);
 
 
   const drawRuneBackground = useCallback((g: PIXI.Graphics) => {
@@ -91,11 +94,12 @@ const RuneGlyph: React.FC<RuneGlyphProps> = ({
     g.clear();
     const highlightAlpha = currentAlpha * (isSelected ? 0.85 : (isHovered ? 0.55 : 0));
     if (highlightAlpha > 0) {
-        const pulse = isSelected ? (Math.sin(timeRef.current * 0.08) * 0.2 + 0.8) : 1;
-        g.lineStyle(isSelected ? 4.5 : 3.5, PIXI.utils.mixColors(secondary, 0xFFFFFF, 0.65), highlightAlpha * pulse);
+        const pulse = isSelected ? (Math.sin(timeRef.current * 0.08) * 0.2 + 0.8) : 1; // timeRef should be okay if delta is handled
+        // Simplified color mixing due to persistent TS errors. Using secondary color directly.
+        g.lineStyle(isSelected ? 4.5 : 3.5, secondary, highlightAlpha * pulse);
         g.drawCircle(0, 0, size * (isSelected ? 1.18 : 1.08));
     }
-  }, [size, secondary, currentAlpha, isSelected, isHovered]);
+  }, [size, secondary, currentAlpha, isSelected, isHovered, timeRef]); // Added timeRef to dependency array
 
 
   const drawRune = useCallback((g: PIXI.Graphics) => {
@@ -107,36 +111,43 @@ const RuneGlyph: React.FC<RuneGlyphProps> = ({
   }, [size, primary, secondary, currentAlpha, isSelected]);
 
   const textStyle = useMemo(() => new PIXI.TextStyle({
-    fontSize: size * 1.15, fill: secondary, stroke: PIXI.utils.mixColors(primary, 0x000000, 0.4),
-    strokeThickness: 2.5, align: 'center',
-    dropShadow: true, dropShadowColor: glow, dropShadowBlur: 7, dropShadowAlpha: 0.65,
+    fontSize: size * 1.15, fill: secondary,
+    stroke: { color: primary, width: 2.5 }, // Simplified color mixing
+    // strokeThickness: 2.5, // Changed to stroke object
+    align: 'center',
+    dropShadow: { color: glow, blur: 7, alpha: 0.65, angle: Math.PI / 4, distance: 3 }, // dropShadow can be an object
     fontFamily: '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif',
   }), [size, primary, secondary, glow]);
 
   const nameTextStyle = useMemo(() => new PIXI.TextStyle({
-    fontSize: 13, fill: 0xf5f5f5, stroke: 0x050505, strokeThickness: 3.5,
+    fontSize: 13, fill: 0xf5f5f5,
+    stroke: { color: 0x050505, width: 3.5 },
+    // strokeThickness: 3.5, // Changed to stroke object
     wordWrap: true, wordWrapWidth: 170, align: 'center',
-    dropShadow: true, dropShadowColor: 0x000000, dropShadowBlur: 4, dropShadowAlpha: 0.85,
+    dropShadow: { color: 0x000000, blur: 4, alpha: 0.85, angle: Math.PI / 4, distance: 2 }, // dropShadow can be an object
   }), []);
 
   return (
-    <Container x={x} y={y} interactive={true} buttonMode={true} scale={animatedScale}
-      pointerover={onPointerOver} pointerout={onPointerOut} pointertap={onClick} >
-      <Graphics draw={drawRuneBackground} filters={[blurFilterGlow]} alpha={currentAlpha * 0.9}/>
-      <Graphics draw={drawRuneHighlight} filters={[blurFilterHighlight]} />
-      <Graphics draw={drawRune} alpha={currentAlpha}/>
-      <PixiText text={runeChar} anchor={0.5} alpha={currentAlpha} style={textStyle} rotation={rotation} />
+    <pixiContainer x={x} y={y} eventMode={'static'} cursor={'pointer'} scale={animatedScale}
+      onPointerOver={onPointerOver} onPointerOut={onPointerOut} onPointerTap={onClick} >
+      <pixiGraphics draw={drawRuneBackground} filters={[blurFilterGlow]} alpha={currentAlpha * 0.9}/>
+      <pixiGraphics draw={drawRuneHighlight} filters={[blurFilterHighlight]} />
+      <pixiGraphics draw={drawRune} alpha={currentAlpha}/>
+      <pixiText text={runeChar} anchor={{x:0.5, y:0.5}} alpha={currentAlpha} style={textStyle} rotation={rotation} />
       {(isHovered || isSelected) && (
-        <PixiText text={name} anchor={[0.5, 1]} y={-size * 0.8 - 14 / animatedScale } style={nameTextStyle} />
+        <pixiText text={name} anchor={{x:0.5, y:1}} y={-size * 0.8 - 14 / animatedScale } style={nameTextStyle} />
       )}
-    </Container>
+    </pixiContainer>
   );
 };
 
 interface WeavingThreadProps { from: { x: number, y: number }; to: { x: number, y: number }; color: number; }
 const WeavingThread: React.FC<WeavingThreadProps> = ({ from, to, color }) => {
   const [progress, setProgress] = useState(0);
-  useTick(delta => { if (progress < 1) setProgress(p => Math.min(1, p + delta * 0.025)); }); 
+  useTick(ticker => { // ticker is PIXI.Ticker in v8
+    const delta = ticker.deltaTime;
+    if (progress < 1) setProgress(p => Math.min(1, p + delta * 0.025));
+  });
 
   const drawThread = useCallback((g: PIXI.Graphics) => {
     g.clear();
@@ -150,19 +161,20 @@ const WeavingThread: React.FC<WeavingThreadProps> = ({ from, to, color }) => {
         currentToX, currentToY
     );
     if (progress > 0.04 && progress < 0.96) {
-        g.beginFill(PIXI.utils.mixColors(color, 0xFFFFFF, 0.75), 0.65);
+        // Simplified color mixing
+        g.beginFill(color, 0.65);
         g.drawCircle(currentToX, currentToY, 3.8);
         g.endFill();
     }
   }, [from, to, color, progress]);
 
-  const blurFilter = useMemo(() => new BlurFilter(2.5), []); 
+  const blurFilter = useMemo(() => new PIXI.BlurFilter({ strength: 2.5 }), []);
 
-  return <Graphics draw={drawThread} filters={[blurFilter]}/>;
+  return <pixiGraphics draw={drawThread} filters={[blurFilter]}/>;
 };
 
 const ChronoScrollsSceneContent: React.FC = () => {
-  const app = useApp();
+  const app = useApplication() as unknown as PIXI.Application; // Cast to unknown then PIXI.Application
   const [hoveredRune, setHoveredRune] = useState<string | null>(null);
   const [selectedRune, setSelectedRune] = useState<string | null>(null);
   const [{ x: viewX, y: viewY }, setViewportPosition] = useState({ x: SCROLL_WIDTH / 2, y: SCROLL_HEIGHT / 2 });
@@ -174,16 +186,18 @@ const ChronoScrollsSceneContent: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const stage = app.stage;
+    if (!app || !app.stage) return; // Guard if app is not ready
+
+    const stageInstance = app.stage; // app.stage is the root container (PIXI.Container)
     let dragging = false; let prevScreenX: number, prevScreenY: number;
 
     const onDragStart = (event: PIXI.FederatedPointerEvent) => { 
         dragging = true; 
         prevScreenX = event.global.x; 
         prevScreenY = event.global.y;
-        if(stage) stage.cursor = 'grabbing';
+        stageInstance.cursor = 'grabbing';
     };
-    const onDragEnd = () => { dragging = false; if(stage) stage.cursor = 'grab';};
+    const onDragEnd = () => { dragging = false; stageInstance.cursor = 'grab';};
     const onDragMove = (event: PIXI.FederatedPointerEvent) => {
       if (dragging && containerRef.current) { 
         const dx = event.global.x - prevScreenX;
@@ -193,10 +207,13 @@ const ChronoScrollsSceneContent: React.FC = () => {
         prevScreenY = event.global.y;
       }
     };
-    const view = app.view as unknown as HTMLCanvasElement; 
+
+    const view = app.canvas as HTMLCanvasElement; // app.canvas is the HTMLCanvasElement
+    if (!view) return;
+
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      if (containerRef.current && view) {
+      if (containerRef.current && view && app.screen) { // Ensure app.screen is available
           const scrollAmount = event.deltaY * -0.001; 
           const newZoom = Math.max(0.15, Math.min(3.5, zoom * (1 + scrollAmount))); 
           
@@ -215,21 +232,23 @@ const ChronoScrollsSceneContent: React.FC = () => {
       }
     };
 
-    if (view && view.style) { 
-        view.addEventListener('wheel', onWheel, { passive: false });
-        stage.interactive = true; stage.hitArea = app.screen; 
-        stage.on('pointerdown', onDragStart); stage.on('pointerup', onDragEnd);
-        stage.on('pointerupoutside', onDragEnd); stage.on('pointermove', onDragMove);
-        if (stage.cursor !== 'grabbing') stage.cursor = 'grab'; 
-    }
+    view.addEventListener('wheel', onWheel, { passive: false });
+    stageInstance.interactive = true;
+    if (app.screen) stageInstance.hitArea = app.screen; // app.screen is the screen rectangle
+    stageInstance.on('pointerdown', onDragStart);
+    stageInstance.on('pointerup', onDragEnd);
+    stageInstance.on('pointerupoutside', onDragEnd);
+    stageInstance.on('pointermove', onDragMove);
+    if (stageInstance.cursor !== 'grabbing') stageInstance.cursor = 'grab';
+
     return () => {
-      if (view && view.style) view.removeEventListener('wheel', onWheel);
-      if(stage){ 
-        stage.off('pointerdown', onDragStart); stage.off('pointerup', onDragEnd);
-        stage.off('pointerupoutside', onDragEnd); stage.off('pointermove', onDragMove);
-      }
+      view.removeEventListener('wheel', onWheel);
+      stageInstance.off('pointerdown', onDragStart);
+      stageInstance.off('pointerup', onDragEnd);
+      stageInstance.off('pointerupoutside', onDragEnd);
+      stageInstance.off('pointermove', onDragMove);
     };
-  }, [app, zoom, viewX, viewY]); 
+  }, [app, zoom, viewX, viewY]); // app is now a dependency
 
 
   const threads = useMemo(() => {
@@ -260,22 +279,24 @@ const ChronoScrollsSceneContent: React.FC = () => {
   const containerY = app.screen.height / 2 - viewY * zoom;
 
   return (
-    <Container ref={containerRef} x={containerX} y={containerY} scale={zoom}>
-      <Graphics draw={drawScrollBackground} />
+    <pixiContainer ref={containerRef} x={containerX} y={containerY} scale={zoom}>
+      <pixiGraphics draw={drawScrollBackground} />
       {threads}
-      {MOCK_EMBEDDINGS_PIXI.map(emb => ( <RuneGlyph key={emb.id} {...emb}
+      {MOCK_EMBEDDINGS_PIXI.map(emb => ( <RuneGlyph key={emb.id}
+          x={emb.position.x} y={emb.position.y} name={emb.name} size={emb.size}
+          clusterId={emb.cluster} runeChar={emb.rune}
           isSelected={selectedRune === emb.id} 
           isHovered={hoveredRune === emb.id && selectedRune !== emb.id}
           onClick={() => handleRuneClick(emb.id)} 
           onPointerOver={() => setHoveredRune(emb.id)} 
           onPointerOut={() => setHoveredRune(null)} />
       ))}
-    </Container>
+    </pixiContainer>
   );
 };
 
 const PixiApp: React.FC = () => {
-  const appRef = useRef<PIXI.Application | null>(null);
+  // appRef removed as it's no longer used.
   const [isPixiAssetsReady, setIsPixiAssetsReady] = useState(false);
   const [rendererType, setRendererType] = useState<string>("Initializing Assets...");
   const isMountedRef = useRef(true);
@@ -294,56 +315,47 @@ const PixiApp: React.FC = () => {
     }
   }, []);
   
-  const stageOptions = useMemo(() => ({
+  const appProps = useMemo(() => ({
     backgroundAlpha: 1, backgroundColor: 0x0a0503,
     width: window.innerWidth, height: window.innerHeight,
     antialias: true, autoDensity: true, resolution: window.devicePixelRatio || 1,
+    preference: 'webgpu' as ('webgpu' | 'webgl' | undefined), // Explicitly type string literal
+    resizeTo: window, // Let @pixi/react handle resizing
   }), []);
   
-  const handleAppMount = useCallback((app: PIXI.Application) => {
-    appRef.current = app; 
-    const currentRenderer = app.renderer;
-    if (currentRenderer.type === PIXI.RENDERER_TYPE.WEBGPU) {
-        setRendererType("WebGPU");
-    } else if (currentRenderer.type === PIXI.RENDERER_TYPE.WEBGL) {
-        setRendererType("WebGL"); // Could also check for WebGL2 vs WebGL1 if needed
-    } else {
-        setRendererType("Canvas");
-    }
-    console.log(`PixiApp: Mounted with ${PIXI.RENDERER_TYPE[currentRenderer.type]} renderer.`);
-
-    const handleResize = () => {
-        if (appRef.current) { 
-            appRef.current.renderer.resize(window.innerWidth, window.innerHeight);
+  // Simplified useEffect for assets initialization, rendererType is now harder to get here
+  // as `app` instance is not directly available in PixiApp component scope post @pixi/react v8 model.
+  // For now, rendererType display is simplified.
+  // Children components like ChronoScrollsSceneContent can use useApplication() to get specific renderer info if needed.
+  useEffect(() => {
+    initializePixiAssets().then(() => {
+        if(isMountedRef.current) {
+          setIsPixiAssetsReady(true);
+          // To get renderer type, a child component would need to use useApplication and lift state up
+          // or this component would need to render a child that does that.
+          // For simplicity now, we won't display the specific renderer type here.
+          setRendererType("Ready");
         }
-    };
-    window.addEventListener('resize', handleResize);
-    
+    });
     return () => {
-        window.removeEventListener('resize', handleResize);
-        // The <Stage> component from @pixi/react handles PIXI.Application destruction on unmount.
-        // Nullifying the ref is good practice.
-        if (appRef.current) {
-             console.log("PixiApp: handleAppMount cleanup, app will be destroyed by Stage.");
-             appRef.current = null;
-        }
-    };
+        isMountedRef.current = false;
+    }
   }, []);
 
 
   if (!isPixiAssetsReady) {
     return (
         <div style={{width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'white', background: '#0a0503', fontSize: '1.2em'}}>
-            Initializing PixiJS Assets & Renderer...
+            Initializing PixiJS Assets... ({rendererType})
         </div>
     );
   }
 
   return (
     <div style={{ width: '100%', height: '100%', cursor: 'grab', background: '#0a0503', overflow: 'hidden' }}>
-        <Stage options={stageOptions} onMount={handleAppMount}>
-          <ChronoScrollsSceneContent />
-        </Stage>
+        <Application {...appProps}>
+          <ChronoScrollsSceneContent /> {/* Render children directly */}
+        </Application>
       <div style={{ position: 'absolute', bottom: '10px', right: '10px', color: 'rgba(220, 200, 180, 0.88)',
         fontSize: '12px', fontFamily: 'Courier New, monospace', background: 'rgba(30,20,10,0.8)',
         padding: '5px 10px', borderRadius: '3px', zIndex: 10000, }}>

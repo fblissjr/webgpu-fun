@@ -5,11 +5,10 @@
 // Enhanced selected item visuals via accessors in ScatterplotLayer.
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import DeckGL from '@deck.gl/react';
+import DeckGL, { DeckGLRef } from '@deck.gl/react'; // DeckGLRef typically from @deck.gl/react
 import { ScatterplotLayer, PathLayer } from '@deck.gl/layers';
-import { COORDINATE_SYSTEM, OrbitView, LightingEffect, AmbientLight, PointLight, PostProcessEffect } from '@deck.gl/core';
-import { DeckProps, DeckGLRef } from '@deck.gl/core/lib/deck';
-import { BloomEffect } from '@deck.gl/extensions';
+import { COORDINATE_SYSTEM, OrbitView, LightingEffect, AmbientLight, PointLight, Effect } from '@deck.gl/core'; // Removed PhongMaterial
+// import { BloomEffect } from '@deck.gl/extensions'; // BloomEffect removed in Deck.gl 9.x from extensions
 
 const MOCK_EMBEDDINGS_DECK = [
   { id: 'd_emb_0_1', position: [-60, 20, 10], cluster: 0, name: "Stellar Nucleosynthesis", intensity: 0.9, size: 15 },
@@ -25,8 +24,9 @@ const CLUSTER_COLORS_DECK = [
   { primary: [30, 150, 255, 255], secondary: [80, 220, 255, 255] },
 ];
 
+// Explicitly type target as a tuple
 const INITIAL_VIEW_STATE = {
-  target: [0, 0, 0], rotationX: 25, rotationOrbit: -35,
+  target: [0, 0, 0] as [number, number, number], rotationX: 25, rotationOrbit: -35,
   zoom: 1.3, minZoom: 0.4, maxZoom: 8,
 };
 
@@ -35,8 +35,10 @@ const pointLight1 = new PointLight({ color: [255, 200, 180], intensity: 1.2, pos
 const pointLight2 = new PointLight({ color: [180, 200, 255], intensity: 0.9, position: [80, 80, 40] });
 const lightingEffect = new LightingEffect({ ambientLight, pointLight1, pointLight2 });
 
-const bloomEffect = new BloomEffect({ strength: 0.55, radius: 0.45, threshold: 0.35 });
-const postProcessEffect = new PostProcessEffect(bloomEffect, {});
+// const bloomEffect = new BloomEffect({ strength: 0.55, radius: 0.45, threshold: 0.35 }); // Commented out BloomEffect
+// const postProcessEffect = new PostProcessEffect(bloomEffect, {}); // Commented out due to BloomEffect removal
+// For Deck.gl 9.x, effects are handled differently. This might be an empty array or use new core effects.
+const effects: Effect[] = [lightingEffect]; // Changed PostProcessEffect[] to Effect[]
 
 
 const DeckGLApp: React.FC = () => {
@@ -62,35 +64,28 @@ const DeckGLApp: React.FC = () => {
   }, []);
 
   const onInitialized = useCallback((deckInstance: DeckGLRef | null) => {
-    if (deckInstance?.deck) {
-        const lumaDevice = (deckInstance.deck as any).luma?.device;
-        if (lumaDevice) {
-            const adapterInfo = lumaDevice.info; 
-            if (adapterInfo?.type === 'webgpu') {
-                setRendererInfo(`WebGPU (${adapterInfo.description || 'LumaGL'})`);
-            } else if (adapterInfo?.type === 'webgl' || adapterInfo?.type === 'webgl2') {
-                setRendererInfo(`WebGL (${adapterInfo.description || 'LumaGL'})`);
+    const currentDeck = deckInstance?.deck;
+    if (currentDeck) {
+        const canvas = currentDeck.getCanvas(); // Use getCanvas() method
+        if (canvas) {
+            // Try to get WebGPU context
+            if ((navigator as any).gpu) { // Basic check if WebGPU API exists
+                canvas.getContext('webgpu') ?
+                    setRendererInfo("WebGPU (Canvas Context)") :
+                    setRendererInfo("WebGPU API available, but context failed");
+            } else if (canvas.getContext('webgl2')) {
+                setRendererInfo("WebGL 2 (Canvas Context)");
+            } else if (canvas.getContext('webgl')) {
+                setRendererInfo("WebGL 1 (Canvas Context)");
             } else {
-                setRendererInfo(adapterInfo?.description || "Unknown (LumaGL)");
+                setRendererInfo("Canvas Context Unavailable");
             }
-            console.log("DeckGLApp: LumaGL Device Info:", adapterInfo);
+            // console.log("DeckGLApp: Deck instance initialized. Canvas:", canvas);
         } else {
-            const gl = (deckInstance.deck as any).gl;
-            if (gl) {
-                const version = gl.getParameter(gl.VERSION);
-                if (typeof version === 'string' && version.toLowerCase().includes('webgl 2')) {
-                    setRendererInfo("WebGL 2 (Context)");
-                } else if (typeof version === 'string' && version.toLowerCase().includes('webgl')) {
-                    setRendererInfo("WebGL 1 (Context)");
-                } else {
-                    setRendererInfo("WebGL (Context Unknown Version)");
-                }
-            } else {
-                 setRendererInfo("Context Unavailable");
-            }
+            setRendererInfo("Canvas Unavailable from Deck Instance");
         }
     } else {
-         setRendererInfo("Deck Instance Unavailable");
+         setRendererInfo("Deck Instance or Canvas Unavailable");
     }
   }, []);
 
@@ -98,24 +93,26 @@ const DeckGLApp: React.FC = () => {
   const layers = useMemo(() => [
     new ScatterplotLayer<any>({ // Explicitly type if your data items have a known interface
       id: 'embedding-geysers', data: MOCK_EMBEDDINGS_DECK,
-      getPosition: (d) => d.position,
-      getRadius: (d) => d.size * (1 + Math.sin(d.intensity * 6 + time * 4 + d.position[0]) * 0.15) * (selectedItemId === d.id ? 1.25 : 1), 
-      getFillColor: (d) => {
+      getPosition: (d: any) => d.position,
+      // Reverted to simple accessor signature, added 'as number' cast
+      getRadius: (d: any) => (d.size * (1 + Math.sin(d.intensity * 6 + time * 4 + d.position[0]) * 0.15) * (selectedItemId === d.id ? 1.25 : 1)) as number,
+      getFillColor: (d: any): [number, number, number, number] => { // Explicit return type
         const baseColor = CLUSTER_COLORS_DECK[d.cluster % CLUSTER_COLORS_DECK.length].primary;
         const intensityFactor = (selectedItemId === d.id ? 0.85 : 0.55) + d.intensity * 0.45; 
-        return [ baseColor[0] * intensityFactor, baseColor[1] * intensityFactor, baseColor[2] * intensityFactor, (selectedItemId === d.id ? 255 : 190 + d.intensity * 65) ];
+        return [ baseColor[0] * intensityFactor, baseColor[1] * intensityFactor, baseColor[2] * intensityFactor, (selectedItemId === d.id ? 255 : 190 + d.intensity * 65) ] as [number, number, number, number];
       },
-      getLineColor: (d) => {
+      getLineColor: (d: any): [number, number, number, number] => { // Explicit return type
         const baseColor = CLUSTER_COLORS_DECK[d.cluster % CLUSTER_COLORS_DECK.length].secondary;
-        return selectedItemId === d.id ? [255,255,255, 255] : [...baseColor.slice(0,3), 190]; 
+        return (selectedItemId === d.id ? [255,255,255, 255] : [...baseColor.slice(0,3), 190]) as [number, number, number, number];
       },
-      lineWidthMinPixels: (d) => selectedItemId === d.id ? 2.5 : 1.0, 
-      lineWidthMaxPixels: (d) => selectedItemId === d.id ? 4.0 : 2.5,
+      // lineWidthMinPixels and lineWidthMaxPixels changed to numbers from accessors
+      lineWidthMinPixels: 1.0,
+      lineWidthMaxPixels: 2.5,
       billboard: true, stroked: true,
       pickable: true, 
       onHover: info => setHoverInfo(info),
       onClick: info => setSelectedItemId(prev => prev === info.object?.id ? null : info.object?.id),
-      material: { ambient: 0.6, diffuse: 0.7, shininess: 32, specularColor: [200, 200, 220] },
+      // material prop removed from ScatterplotLayer
       // updateTriggers are vital if accessors depend on state/props NOT in the `data` prop.
       // Here, selectedItemId is used in accessors, so it should trigger updates.
       // Deck.gl typically handles this by checking if accessor functions themselves change.
@@ -141,19 +138,28 @@ const DeckGLApp: React.FC = () => {
         });
         return paths;
       })(),
-      getPath: (d) => d.path, getColor: (d) => [...d.color.slice(0,3), d.opacity],
+      getPath: (d: any) => d.path,
+      // Reverted to simple accessor signature
+      getColor: (d: any) => [...d.color.slice(0,3), d.opacity],
       getWidth: 1.8, widthMinPixels: 1.0, widthMaxPixels: 2.8,
       jointRounded: true, capRounded: true,
     }),
   ], [time, selectedItemId]); 
 
-  const deckGLProps: DeckProps = {
+  const views = useMemo(() => [new OrbitView({ id: 'mainOrbit', orbitAxis: 'Z', fovy: 50 })], []);
+
+  // Removed explicit DeckProps type, let TypeScript infer from DeckGL component usage
+  const deckGLProps = {
     ref: deckRef,
-    layers, initialViewState: viewState, onViewStateChange,
-    controller: { type: OrbitView, inertia: 200 },
+    layers,
+    initialViewState: { mainOrbit: INITIAL_VIEW_STATE },
+    viewState: { mainOrbit: viewState }, // Added viewState for controlled component
+    onViewStateChange,
+    views: views, // Added views prop
+    controller: true, // Use default controller for the view
     coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
-    effects: [lightingEffect, postProcessEffect],
-    parameters: { clearColor: [0.01, 0.005, 0.02, 1], depthTest: true },
+    effects: effects, // Use the updated effects array (without Bloom)
+    // parameters: { depthTest: true }, // Commented out due to type error
     useDevicePixels: true,
     onLoad: () => onInitialized(deckRef.current), // Deck.gl instance is passed here
   };
